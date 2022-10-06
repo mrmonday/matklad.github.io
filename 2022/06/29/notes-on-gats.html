@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Notes on GATs</title>
+  <meta name="description"
+    content="There&#8217;s a bit of discussion happening in Rust community on the generic associated types topic.I can not help but add my own thoughts to the pile :-)">
+  <link rel="canonical" href="https://matklad.github.io//2022/06/29/notes-on-gats.html">
+  <link rel="alternate" type="application/rss+xml" title="matklad" href="https://matklad.github.io//feed.xml">
+
+  <style>
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Regular.woff2') format('woff2');
+    }
+
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Bold.woff2') format('woff2');
+      ;
+      font-weight: bold;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      margin-block-start: 0;
+      margin-block-end: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-weight: 300;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 80ch;
+      padding-left: 2ch;
+      padding-right: 2ch;
+    }
+
+    .site-header {
+      width: 100%;
+      max-width: 80ch;
+      margin-bottom: 1.5rem;
+    }
+
+    .site-header>nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .site-header .-title {
+      flex-grow: 2;
+    }
+
+    .site-footer {
+      display: flex;
+      justify-content: center;
+      align-items: baseline;
+      width: 100%;
+      max-width: 80ch;
+      margin-top: 1rem;
+      height: 2rem;
+      padding-left: 1ch;
+      padding-right: 1ch;
+    }
+  </style>
+  <link rel="stylesheet" href=" /css/adoc.css">
+  <link rel="stylesheet" href=" /css/rouge-github.css">
+  <link rel="stylesheet" href=" /css/main.css">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css?family=EB+Garamond:400,400italic,700,700italic%7COpen+Sans:300">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.4.0/css/font-awesome.min.css">
+</head>
+
+<body>
+  <header class="site-header">
+    <nav>
+      <a class="-title" href="/">matklad</a>
+      
+      
+      <a href="/about/">About</a>
+      
+      
+      
+      
+      
+      <a href="/resume/">Resume</a>
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+    </nav>
+  </header>
+
+  <main>
+    <article>
+  <h1>Notes on GATs</h1>
+  <div class="post-meta sect1">Jun 29, 2022</div>
+  <div class="paragraph">
+<p>There&#8217;s a bit of discussion happening in Rust community on the generic associated types topic.
+I can not help but add my own thoughts to the pile :-)</p>
+</div>
+<div class="paragraph">
+<p>I don&#8217;t intend to write a well-edited post considering all pros and cones (intentional typo to demonstrate how unedited this is).
+Rather, I just want to dump my experience as is.
+Ultimately I trust the lang team to make the right call here <strong>way</strong> more than I trust myself.
+The post could be read as a bit inflammatory, but my stated goal here is not to sway someone&#8217;s mind by the arguments, but rather expose my own thinking process.</p>
+</div>
+<div class="paragraph">
+<p>This post is partially prompted by the following comment from the RFC:</p>
+</div>
+<div class="quoteblock">
+<blockquote>
+<div class="paragraph">
+<p>I probably have GATs in every project I do write.</p>
+</div>
+</blockquote>
+</div>
+<div class="paragraph">
+<p>It stuck with me, because this is very much the opposite of the experience I have.
+I&#8217;ve been using Rust extensively for a while, mostly as an application (as opposed to library) developer, and I can&#8217;t remember a single instance where I really wanted to have GATs.
+This is a consequences of my overall code style&#8201;&#8212;&#8201;I try to use abstraction sparingly and rarely reach out for traits.
+I don&#8217;t think I&#8217;ve ever build a meaningful abstraction which was expressed via traits?
+On the contrary, I try hard to make everything concrete and non-generic on the language level.</p>
+</div>
+<div class="paragraph">
+<p>What&#8217;s more, when I do reach out for traits, most of the time this is to use trait objects, which give me a new runtime capability to use different, substitutable concrete type.
+For the static,monomorphization based subset of traits I find that most of the time non-trait solution seem to work.</p>
+</div>
+<div class="paragraph">
+<p>And I think GATs (and associated types in general) don&#8217;t work with trait objects, which probably explains why, even when I use traits, I don&#8217;t generally need GATs.
+Though, it seems to me that lifetime-only subset of GATs actually works with trait objects?
+That is, lending iterator seems to be object safe?</p>
+</div>
+<div class="paragraph">
+<p>I guess, the only place where I do, indirectly, want GATs is to make <code>async trait</code> work, but even then, I usually am interested in object-safe async traits, which I think don&#8217;t need and can&#8217;t use GATs?</p>
+</div>
+<hr>
+<div class="paragraph">
+<p>Another disconnection between my usage of Rust and discussion surrounding the GATs is in one of the prominent examples&#8201;&#8212;&#8201;parser combinator library.
+In practice, for me parser combinator&#8217;s primary use-case was always a vehicle for teaching advanced types (eg, the monads paper uses parsers as one of the examples).
+For production use-cases I&#8217;ve encountered, it was always either a hand-written parser, or a full-blown parser generator.</p>
+</div>
+</article>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <a href="https://github.com/matklad/matklad.github.io/edit/master/_posts/2022-06-29-notes-on-gats.adoc">
+        <i class="fa fa-edit"></i> fix typo
+      </a>
+
+      <a href=" /feed.xml">
+        <i class="fa fa-rss"></i> rss
+      </a>
+
+      <a href="https://github.com/matklad">
+        <i class="fa fa-github"></i> matklad
+      </a>
+    </p>
+  </footer>
+</body>
+
+</html>

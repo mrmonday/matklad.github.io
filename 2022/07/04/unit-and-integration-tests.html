@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Unit and Integration Tests</title>
+  <meta name="description"
+    content="In this post I argue that integration-vs-unit is a confused, and harmful, distinction.I provide a more useful two-dimensional mental model instead.The model ...">
+  <link rel="canonical" href="https://matklad.github.io//2022/07/04/unit-and-integration-tests.html">
+  <link rel="alternate" type="application/rss+xml" title="matklad" href="https://matklad.github.io//feed.xml">
+
+  <style>
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Regular.woff2') format('woff2');
+    }
+
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Bold.woff2') format('woff2');
+      ;
+      font-weight: bold;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      margin-block-start: 0;
+      margin-block-end: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-weight: 300;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 80ch;
+      padding-left: 2ch;
+      padding-right: 2ch;
+    }
+
+    .site-header {
+      width: 100%;
+      max-width: 80ch;
+      margin-bottom: 1.5rem;
+    }
+
+    .site-header>nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .site-header .-title {
+      flex-grow: 2;
+    }
+
+    .site-footer {
+      display: flex;
+      justify-content: center;
+      align-items: baseline;
+      width: 100%;
+      max-width: 80ch;
+      margin-top: 1rem;
+      height: 2rem;
+      padding-left: 1ch;
+      padding-right: 1ch;
+    }
+  </style>
+  <link rel="stylesheet" href=" /css/adoc.css">
+  <link rel="stylesheet" href=" /css/rouge-github.css">
+  <link rel="stylesheet" href=" /css/main.css">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css?family=EB+Garamond:400,400italic,700,700italic%7COpen+Sans:300">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.4.0/css/font-awesome.min.css">
+</head>
+
+<body>
+  <header class="site-header">
+    <nav>
+      <a class="-title" href="/">matklad</a>
+      
+      
+      <a href="/about/">About</a>
+      
+      
+      
+      
+      
+      <a href="/resume/">Resume</a>
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+    </nav>
+  </header>
+
+  <main>
+    <article>
+  <h1>Unit and Integration Tests</h1>
+  <div class="post-meta sect1">Jul 4, 2022</div>
+  <div id="preamble">
+<div class="sectionbody">
+<div class="paragraph">
+<p>In this post I argue that integration-vs-unit is a confused, and harmful, distinction.
+I provide a more useful two-dimensional mental model instead.
+The model is descriptive (it allows to think more clearly about any test), but I also include my personal prescriptions (the model shows metrics which are and aren&#8217;t worth optimizing).</p>
+</div>
+<div class="paragraph">
+<p>Credit for the idea goes to the <a href="https://abseil.io/resources/swe-book">SWE book</a>.
+I always felt that integration versus unit debate is confused, the book helped me to formulate in which way exactly.</p>
+</div>
+<div class="paragraph">
+<p>I won&#8217;t actually rigorously demonstrate the existing confusion&#8201;&#8212;&#8201;I find it self-evident.
+As just two examples:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Unit-testing is used as a synonym with automated testing (x-unit frameworks).</p>
+</li>
+<li>
+<p>Cargo uses &#8220;unit&#8221; and &#8220;integration&#8221; terminology to describe Rust-specific properties of the compilation model, which is orthogonal to the traditional, however fuzzy, meaning of this terms.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Most of the time, it&#8217;s more productive to speak about just &#8220;tests&#8221;, or maybe &#8220;automated tests&#8221;, rather than argue where something should be considered a unit or an integration tests.</p>
+</div>
+<div class="paragraph">
+<p>But I argue that a useful, more precise classification exists.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="purity"><a class="anchor" href="#purity"></a>Purity</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p><em>The first</em> axis of classification is, broadly speaking, performance.
+&#8220;How much time would a thousand of similar tests take?&#8221; is a very useful metric.
+The dependency between the time from making an edit to getting the test results and most other interesting metrics in software (performance, time to fix defects, security) is super-linear.
+Tests longer than attention span obliterate productivity.</p>
+</div>
+<div class="paragraph">
+<p>It&#8217;s useful to take a closer look at what constitutes a performant test.
+One non-trivial observation here is that test speed is categorical, rather than numerical.
+Certain tests are order-of-magnitude slower than others.
+Consider the following list:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Single-threaded pure computation</p>
+</li>
+<li>
+<p>Multi-threaded parallel computation</p>
+</li>
+<li>
+<p>Multi-threaded concurrent computation with time-based synchronization and access to disk</p>
+</li>
+<li>
+<p>Multi-process computation</p>
+</li>
+<li>
+<p>Distributed computation</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>Each step of this ladder adds half-an-order of magnitude to test&#8217;s runtime.</p>
+</div>
+<div class="paragraph">
+<p>Time is not the only thing affected&#8201;&#8212;&#8201;the higher you go, the bigger is the fraction of flaky tests.
+It&#8217;s nay impossible to make a test for a pure function flaky.
+If you add threads into the mix, keeping flakiness out requires some careful thinking about synchronization.
+And if the tests spans several processes, it is almost bound to fail under some more unusual circumstances.</p>
+</div>
+<div class="paragraph">
+<p>Yet another effect we observe along this axis is resilience to unrelated changes.
+The more of operating system and other processes is involved in the test, the higher is the probability that some upgrade somewhere breaks something.</p>
+</div>
+<div class="paragraph">
+<p>I think the &#8220;purity&#8221; concept from functional programming is a good way to generalize this axis of the differences between the tests.
+Pure test do little-to-no IO, they are independent of timings and environment.
+Less pure tests do more of the impure things.
+Purity is correlated with performance, repeatability and stability.
+Test purity is non-binary, but it is mostly discrete.
+Threads, time, file-system, network, processes are the notches to think about.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="extent"><a class="anchor" href="#extent"></a>Extent</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p><em>The second</em> axis is the fraction of the code which gets exercised, potentially indirectly, by the test.
+Does the test exercise only the business logic module, or is the database API and the HTTP handling also required?
+This is <em>distinct</em> from performance: running more code doesn&#8217;t mean that the code will run slower.
+An infinite loop takes very little code.
+What affects performance is not whether tests for business logic touch persistence, but whether, in tests, persistence is backed by an in-memory hash-map or by an out-of-process database server.</p>
+</div>
+<div class="paragraph">
+<p>The &#8220;extent&#8221; of the tests is a good indicator of the overall architecture of the application, but usually it isn&#8217;t a worthy metric to optimize by itself.
+On the contrary, artificially limiting the extent of tests by mocking your own code (as opposed to mocking impure IO) reduces fidelity of the tests, and makes the code more brittle in the face of refactors.</p>
+</div>
+<div class="paragraph">
+<p>One potential exception here is the impact on compilation time.
+In a layered application <code>A &lt; B &lt; C</code>, it&#8217;s possible to test <code>A</code> either through its interface to <code>B</code> (small-extent test) or by driving <code>A</code> indirectly through <code>C</code>.
+The latter has a problem that, after changing <code>A</code>, running tests might require, depending on the language, rebuilding <code>B</code> and <code>C</code> as well.</p>
+</div>
+<hr>
+<div class="paragraph">
+<p>Summing up:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Don&#8217;t think about tests in terms of opposition between unit and integration, whatever that means. Instead,</p>
+</li>
+<li>
+<p>Think in terms of test&#8217;s <strong>purity</strong> and <strong>extent</strong>.</p>
+</li>
+<li>
+<p><strong>Purity</strong> corresponds to the amount of generalized IO the test is doing and is correlated with desirable metrics, namely performance and resilience.</p>
+</li>
+<li>
+<p><strong>Extent</strong> corresponds to the amount of code the test exercises. Extent somewhat correlates with impurity, but generally does not directly affect performance.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>And, the prescriptive part:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Ruthlessly optimize purity, moving one step down on the ladder of impurity gives huge impact.</p>
+</li>
+<li>
+<p>Generally, just let the tests have their natural extent. Extent isn&#8217;t worth optimizing by itself, but it can tell you something about your application&#8217;s architecture.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>If you enjoyed this post, you might like <a href="https://matklad.github.io/2021/05/31/how-to-test.html">&#8220;How to Test&#8221;</a> as well.
+It goes further in the prescriptive direction, but, when writing it, I didn&#8217;t have the two dimensional purity-extent vocabulary yet.</p>
+</div>
+<hr>
+<div class="paragraph">
+<p>As I&#8217;ve said, this framing is lifted from the SWE book.
+There are two differences, one small and one big.
+The small difference is that the book uses &#8220;size&#8221; terminology in place of &#8220;purity&#8221;.
+The big difference is that the second axis is different: rather than looking at which fraction code gets exercised by the test, the book talks about test &#8220;scope&#8221;: how large is the bit we are actually testing?</p>
+</div>
+<div class="paragraph">
+<p>I do find scope concept useful to think about!
+And, unlike extent, keeping most tests focused is a good active prescriptive advice.</p>
+</div>
+<div class="paragraph">
+<p>I however find the scope concept a bit too fuzzy for actual classification.</p>
+</div>
+<div class="paragraph">
+<p>Consider this test from rust-analyzer, which checks that we can complete a method from a trait if the trait is implemented:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="rust"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+</pre></td><td class="code"><pre><span class="nd">#[test]</span>
+<span class="k">fn</span> <span class="nf">completes_trait_method</span><span class="p">()</span> <span class="p">{</span>
+    <span class="nf">check</span><span class="p">(</span>
+        <span class="s">r"
+struct S {}
+pub trait T {
+    fn f(&amp;self)
+}
+impl T for S {}
+
+fn main(s: S) {
+    s.$0
+}
+"</span><span class="p">,</span>
+        <span class="nd">expect!</span><span class="p">[[</span><span class="s">r#"
+            me f() (as T) fn(&amp;self)
+        "#</span><span class="p">]],</span>
+    <span class="p">);</span>
+<span class="p">}</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>I struggle with determining the scope of this test.
+On the one hand, this clearly tests very narrow, very specific scenario.
+On the other hand, to make this work, all the layers of the system have to work just right.
+The lexer, the parser, name resolution and type checking all have to be prepared for incomplete code.
+This test tests not so much the completion logic itself, as all the underlying infrastructure for semantic analysis.</p>
+</div>
+<div class="paragraph">
+<p>The test is very easy to classify in the purity/extent framework.
+It&#8217;s 100% pure&#8201;&#8212;&#8201;no IO, just a single thread.
+It has maximal extent&#8201;&#8212;&#8201;the tests exercises the bulk of the rust-analyzer codebase, the only thing that isn&#8217;t touched here is the LSP itself.</p>
+</div>
+<div class="paragraph">
+<p>Also, as a pitch for the  <a href="https://matklad.github.io/2021/05/31/how-to-test.html">&#8220;How to Test&#8221;</a> post, take a second to appreciate how simple the test is, considering that it tests an error-resilient, highly incremental compiler :)</p>
+</div>
+</div>
+</div>
+</article>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <a href="https://github.com/matklad/matklad.github.io/edit/master/_posts/2022-07-04-unit-and-integration-tests.adoc">
+        <i class="fa fa-edit"></i> fix typo
+      </a>
+
+      <a href=" /feed.xml">
+        <i class="fa fa-rss"></i> rss
+      </a>
+
+      <a href="https://github.com/matklad">
+        <i class="fa fa-github"></i> matklad
+      </a>
+    </p>
+  </footer>
+</body>
+
+</html>

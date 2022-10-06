@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>From Paxos to BFT</title>
+  <meta name="description"
+    content="This is a sequel to Notes on Paxos post.Similarly, the primarily goal here is for me to understand why the BFT consensus algorithm works in detail.This might...">
+  <link rel="canonical" href="https://matklad.github.io//2022/10/03/from-paxos-to-bft.html">
+  <link rel="alternate" type="application/rss+xml" title="matklad" href="https://matklad.github.io//feed.xml">
+
+  <style>
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Regular.woff2') format('woff2');
+    }
+
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Bold.woff2') format('woff2');
+      ;
+      font-weight: bold;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      margin-block-start: 0;
+      margin-block-end: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-weight: 300;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 80ch;
+      padding-left: 2ch;
+      padding-right: 2ch;
+    }
+
+    .site-header {
+      width: 100%;
+      max-width: 80ch;
+      margin-bottom: 1.5rem;
+    }
+
+    .site-header>nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .site-header .-title {
+      flex-grow: 2;
+    }
+
+    .site-footer {
+      display: flex;
+      justify-content: center;
+      align-items: baseline;
+      width: 100%;
+      max-width: 80ch;
+      margin-top: 1rem;
+      height: 2rem;
+      padding-left: 1ch;
+      padding-right: 1ch;
+    }
+  </style>
+  <link rel="stylesheet" href=" /css/adoc.css">
+  <link rel="stylesheet" href=" /css/rouge-github.css">
+  <link rel="stylesheet" href=" /css/main.css">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css?family=EB+Garamond:400,400italic,700,700italic%7COpen+Sans:300">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.4.0/css/font-awesome.min.css">
+</head>
+
+<body>
+  <header class="site-header">
+    <nav>
+      <a class="-title" href="/">matklad</a>
+      
+      
+      <a href="/about/">About</a>
+      
+      
+      
+      
+      
+      <a href="/resume/">Resume</a>
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+    </nav>
+  </header>
+
+  <main>
+    <article>
+  <h1>From Paxos to BFT</h1>
+  <div class="post-meta sect1">Oct 3, 2022</div>
+  <div id="preamble">
+<div class="sectionbody">
+<div class="paragraph">
+<p>This is a sequel to <a href="https://matklad.github.io/2020/11/01/notes-on-paxos.html">Notes on Paxos</a> post.
+Similarly, the primarily goal here is for me to understand why the BFT consensus algorithm works in detail.
+This might, or might not be useful for other people!
+The Paxos article is a prerequisite, best to read that now, and return to this article tomorrow :)</p>
+</div>
+<div class="paragraph">
+<p>Note also that while Paxos was more or less a direct translation of Lamport&#8217;s lecture, this post is a mish-mash oft the original BFT paper by Liskov and Castro, my own thinking, and a cursory glance as <a href="https://lamport.azurewebsites.net/tla/byzpaxos.html">this formalization</a>.
+As such, the probability that there are no mistakes here is quite low.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="what-is-bft"><a class="anchor" href="#what-is-bft"></a>What is BFT?</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>BFT stands for Byzantine Fault Tolerant consensus.
+Similarly to Paxos, we imagine a distributed system of computers communicating over a faulty network which can arbitrary reorder, delay, and drop messages.
+And we want computers to agree on some specific choice of value among the set of possibilities, such that any two computers pick the same value.
+Unlike Paxos though,  we also assume that computers themselves might be faulty or malicious.
+So, we add a new condition to our list of bad things.
+Besides reordering, duplication, delaying and dropping, a fake message can be manufactured out of thin air.</p>
+</div>
+<div class="paragraph">
+<p>Of course, if absolutely arbitrary messages can be forged, then no consensus is possible&#8201;&#8212;&#8201;each machine lives in its own solipsistic world which might be completely unlike the world of every other machine.
+So there&#8217;s one restriction&#8201;&#8212;&#8201;messages are cryptographically signed by the senders, and it is assumed that it is impossible for a faulty node to impersonate non-faulty one.</p>
+</div>
+<div class="paragraph">
+<p>Can we still achieve consensus?
+As long as for each <code>f</code> faulty, malicious nodes, we have at least <code>2f + 1</code> honest ones.</p>
+</div>
+<div class="paragraph">
+<p>Similarly to the Paxos post, we will capture this intuition into a precise mathematical statement about trajectories of state machines.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="paxos-revisited"><a class="anchor" href="#paxos-revisited"></a>Paxos Revisited</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Our plan is to start with vanilla Paxos, and then patch it to allow byzantine behavior.
+Here&#8217;s what we&#8217;ve arrived at last time:</p>
+</div>
+<div class="listingblock">
+<div class="title">Paxos</div>
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+</pre></td><td class="code"><pre>Sets:
+  𝔹       -- Numbered set of ballots (for example, ℕ)
+  𝕍       -- Arbitrary set of values
+  𝔸       -- Finite set of acceptors
+  ℚ ∈ 2^𝔸 -- Set of quorums
+
+  -- Sets of messages for each of the four subphases
+  Msgs1a ≡ {type: {"1a"}, bal: 𝔹}
+
+  Msgs1b ≡ {type: {"1b"}, bal: 𝔹, acc: 𝔸,
+            vote: {bal: 𝔹, val: 𝕍} ∪ {null}}
+
+  Msgs2a ≡ {type: {"2a"}, bal: 𝔹, val: 𝕍}
+
+  Msgs2b ≡ {type: {"2b"}, bal: 𝔹, val: 𝕍, acc: 𝔸}
+
+Assume:
+  ∀ q1, q2 ∈ ℚ: q1 ∩ q2 ≠ {}
+
+Vars:
+  -- Set of all messages sent so far
+  msgs ∈ 2^(Msgs1a ∪ Msgs1b ∪ Msgs2a ∪ Msgs2b)
+
+  -- Function that maps acceptors to ballot numbers or -1
+  -- maxBal :: 𝔸 -&gt; 𝔹 ∪ {-1}
+  maxBal ∈ (𝔹 ∪ {-1})^𝔸
+
+  -- Function that maps acceptors to their last vote
+  -- lastVote :: 𝔸 -&gt; {bal: 𝔹, val: 𝕍} ∪ {null}
+  lastVote ∈ ({bal: 𝔹, val: 𝕍} ∪ {null})^𝔸
+
+Send(m) ≡ msgs' = msgs ∪ {m}
+
+Safe(b, v) ≡
+  ∃ q ∈ ℚ:
+  let
+    qmsgs  ≡ {m ∈ msgs: m.type = "1b" ∧ m.bal = b ∧ m.acc ∈ q}
+    qvotes ≡ {m ∈ qmsgs: m.vote ≠ null}
+  in
+      ∀ a ∈ q: ∃ m ∈ qmsgs: m.acc = a
+    ∧ (  qvotes = {}
+       ∨ ∃ m ∈ qvotes:
+             m.vote.val = v
+           ∧ ∀ m1 ∈ qvotes: m1.vote.bal &lt;= m.vote.bal)
+
+Phase1a(b) ≡
+    maxBal' = maxBal
+  ∧ lastVote' = lastVote
+  ∧ Send({type: "1a", bal: b})
+
+Phase1b(a) ≡
+  ∃ m ∈ msgs:
+      m.type = "1a" ∧ maxBal(a) &lt; m.bal
+    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1
+                            then m.bal - 1
+                            else maxBal(a1)
+    ∧ lastVote' = lastVote
+    ∧ Send({type: "1b", bal: m.bal, acc: a, vote: lastVote(a)})
+
+Phase2a(b, v) ≡
+   ¬∃ m ∈ msgs: m.type = "2a" ∧ m.bal = b
+  ∧ Safe(b, v)
+  ∧ maxBal' = maxBal
+  ∧ lastVote' = lastVote
+  ∧ Send({type: "2a", bal: b, val: v})
+
+Phase2b(a) ≡
+  ∃ m ∈ msgs:
+      m.type = "2a" ∧ maxBal(a) &lt; m.bal
+    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1 then m.bal else maxBal(a1)
+    ∧ lastVote' = λ a1 ∈ 𝔸: if a = a1
+                              then {bal: m.bal, val: m.val}
+                              else lastVote(a1)
+    ∧ Send({type: "2b", bal: m.bal, val: m.val, acc: a})
+
+Init ≡
+    msgs = {}
+  ∧ maxBal   = λ a ∈ 𝔸: -1
+  ∧ lastVote = λ a ∈ 𝔸: null
+
+Next ≡
+    ∃ b ∈ 𝔹:
+        Phase1a(b) ∨ ∃ v ∈ 𝕍: Phase2a(b, v)
+  ∨ ∃ a ∈ 𝔸:
+        Phase1b(a) ∨ Phase2b(a)
+
+chosen ≡
+  {v ∈ V: ∃ q ∈ ℚ, b ∈ 𝔹: AllVotedFor(q, b, v)}
+
+AllVotedFor(q, b, v) ≡
+  ∀ a ∈ q: (a, b, v) ∈ votes
+
+votes ≡
+  let
+    msgs2b ≡ {m ∈ msgs: m.type = "2b"}
+  in
+    {(m.acc, m.bal, m.val): m ∈ msgs2b}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Our general idea is to add some &#8220;evil&#8221; acceptors 𝔼 to the mix and allow them sending arbitrary messages, while at the same time making sure that the subset of &#8220;good&#8221; acceptors continues to run Paxos.
+What makes this complex is that we don&#8217;t know which acceptor are good and which are bad.
+So this is our setup</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+</pre></td><td class="code"><pre>Sets:
+  𝔹       -- Numbered set of ballots (for example, ℕ)
+  𝕍       -- Arbitrary set of values
+  𝔸       -- Finite set of good acceptors
+  𝔼       -- Finite set of evil acceptors
+  𝔸𝔼 ≡ 𝔸 ∪ 𝔼 -- All acceptors
+  ℚ ∈ 2^𝔸𝔼 -- Set of quorums
+
+  Msgs1a ≡ {type: {"1a"}, bal: 𝔹}
+
+  Msgs1b ≡ {type: {"1b"}, bal: 𝔹, acc: 𝔸𝔼,
+            vote: {bal: 𝔹, val: 𝕍} ∪ {null}}
+
+  Msgs2a ≡ {type: {"2a"}, bal: 𝔹, val: 𝕍}
+
+  Msgs2b ≡ {type: {"2b"}, bal: 𝔹, val: 𝕍, acc: 𝔸𝔼}
+
+Assume:
+  𝔼 ∩ 𝔸 = {}
+  ∀ q1, q2 ∈ ℚ: q1 ∩ q2 ∩ 𝔸 ≠ {}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>If previously the quorum condition was &#8220;any two quorums have an acceptor in common&#8221;, it is now &#8220;any two quorums have a good acceptor in common&#8221;.
+An alternative way to say that is &#8220;a byzantine quorum is a super-set of normal quorum&#8221;, which corresponds to the intuition where we are running normal Paxos, and there are just some extra evil guys whom we try to ignore.
+For Paxos, we allowed <code>f</code> faulty out of <code>2f + 1</code> total nodes  with <code>f+1</code> quorums.
+For Byzantine Paxos, we&#8217;ll have <code>f</code> byzantine out <code>3f + 1</code> nodes with <code>2f+1</code> quorums.
+As I&#8217;ve said, if we forget about byzantine folks, we get exactly <code>f + 1</code> out of <code>2f + 1</code> picture of normal Paxos.</p>
+</div>
+<div class="paragraph">
+<p>The next step is to determine behavior for byzantine nodes.
+They can send any message, as long as they are the author:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+</pre></td><td class="code"><pre>Byzantine(a) ≡
+      ∃ b ∈ 𝔹:             Send({type: "1a", bal: b})
+    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2a", bal: b, val: v})
+    ∨ ∃ b1, b2 ∈ 𝔹, v ∈ 𝕍: Send({type: "1b", bal: b1, acc: a,
+                                  vote: {bal: b2, val: v}})
+    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2b", bal: b, val: v, acc: a})
+  ∧ maxBal' = maxBal
+  ∧ lastVote' = lastVote
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>That is, a byzantine acceptor can send any <code>1a</code> or <code>2a</code> message at any time, while for <code>1b</code> and <code>2b</code> the author should match.</p>
+</div>
+<div class="paragraph">
+<p>What breaks?
+The most obvious thing is <code>Phase2b</code>, that is, voting.
+In Paxos, as soon as an acceptor receives a <code>2a</code> message, it votes for it.
+The correctness of Paxos hinges on the <code>Safe</code> check before we send <code>2a</code> message, but a Byzantine node can send an arbitrary <code>2a</code>.</p>
+</div>
+<div class="paragraph">
+<p>The solution here is natural: rather than blindly trust <code>2a</code> messages, acceptors would themselves double-check the safety condition, and reject the message if it doesn&#8217;t hold:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+</pre></td><td class="code"><pre>Phase2b(a) ≡
+  ∃ m ∈ msgs:
+      m.type = "2a" ∧ maxBal(a) &lt; m.bal
+<span class="hll">    ∧ Safe(m.bal, m.val)
+</span>    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1 then m.bal else maxBal(a1)
+    ∧ lastVote' = λ a1 ∈ 𝔸: if a = a1
+                              then {bal: m.bal, val: m.val}
+                              else lastVote(a1)
+    ∧ Send({type: "2b", bal: m.bal, val: m.val, acc: a})
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Implementation wise, this means that, when a coordinator sends a <code>2a</code>, it also wants to include <code>1b</code> messages proving the safety of <code>2a</code>.
+But in the spec we can just assume that all messages are broadcasted, for simplicity.
+Ideally, for correct modeling you also want to model how each acceptor learns new messages, to make sure that negative reasoning about a certain message <em>not</em> being sent doesn&#8217;t creep in, but we&#8217;ll avoid that here.</p>
+</div>
+<div class="paragraph">
+<p>However, just re-checking safety doesn&#8217;t fully solve the problem.
+It might be the case that several values are safe at a particular ballot (indeed, in the first ballot any value is safe), and it is exactly the job of a coordinator / <code>2a</code> message to pick one value to break the tie.
+And in our case a byzantine coordinator can send two <code>2a</code> for different valid values.</p>
+</div>
+<div class="paragraph">
+<p>And here we&#8217;ll make the single non-trivial modification to the algorithm.
+Like the <code>Safe</code> condition is at the heart of Paxos, the <code>Confirmed</code> condition is the heart here.</p>
+</div>
+<div class="paragraph">
+<p>So basically we expect a good coordinator to send just one <code>2a</code> message, but a bad one can send many.
+And we want to somehow distinguish the two cases.
+One way to do that is to broadcast ACKs for <code>2a</code> among acceptors.
+If I received a <code>2a</code> message, checked that the value therein is safe, and also know that everyone else received this same <code>2a</code> message, I can safely vote for the value.</p>
+</div>
+<div class="paragraph">
+<p>So we introduce a new message type, <code>2ac</code>, which confirms a valid <code>2a</code> message:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+</pre></td><td class="code"><pre>Msgs2ac ≡ {type: {"2ac"}, bal: 𝔹, val: 𝕍, acc: 𝔸}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Naturally, evil acceptors can confirm whatever:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+</pre></td><td class="code"><pre>Byzantine(a) ≡
+      ∃ b ∈ 𝔹:             Send({type: "1a", bal: b})
+    ∨ ∃ b1, b2 ∈ 𝔹, v ∈ 𝕍: Send({type: "1b", bal: b1, acc: a,
+                                 vote: {bal: b2, val: v}})
+    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2a", bal: b, val: v})
+<span class="hll">    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2ac", bal: b, val: v, acc: a})
+</span>    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2b", bal: b, val: v, acc: a})
+  ∧ maxBal' = maxBal
+  ∧ lastVote' = lastVote
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>But, if we get a quorum of confirmations, we can be sure that no other value will be confirmed in a given ballot (each good acceptors confirms at most a single message in a ballot (and we need a bit of state for that as well))</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+</pre></td><td class="code"><pre>Confirmed(b, v) ≡
+  ∃ q ∈ ℚ: ∀ a ∈ q: {type: "2ac", bal: b, val: v, acc: a} ∈ msgs
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Putting everything so far together, we get</p>
+</div>
+<div class="listingblock">
+<div class="title">Not Yet BFT Paxos</div>
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10
+ 11
+ 12
+ 13
+ 14
+ 15
+ 16
+ 17
+ 18
+ 19
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 30
+ 31
+ 32
+ 33
+ 34
+ 35
+ 36
+ 37
+ 38
+ 39
+ 40
+ 41
+ 42
+ 43
+ 44
+ 45
+ 46
+ 47
+ 48
+ 49
+ 50
+ 51
+ 52
+ 53
+ 54
+ 55
+ 56
+ 57
+ 58
+ 59
+ 60
+ 61
+ 62
+ 63
+ 64
+ 65
+ 66
+ 67
+ 68
+ 69
+ 70
+ 71
+ 72
+ 73
+ 74
+ 75
+ 76
+ 77
+ 78
+ 79
+ 80
+ 81
+ 82
+ 83
+ 84
+ 85
+ 86
+ 87
+ 88
+ 89
+ 90
+ 91
+ 92
+ 93
+ 94
+ 95
+ 96
+ 97
+ 98
+ 99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+</pre></td><td class="code"><pre>Sets:
+  𝔹          -- Numbered set of ballots (for example, ℕ)
+  𝕍          -- Arbitrary set of values
+  𝔸          -- Finite set of acceptors
+<span class="hll">  𝔼          -- Finite set of evil acceptors
+</span><span class="hll">  𝔸𝔼 ≡ 𝔸 ∪ 𝔼 -- Set of all acceptors
+</span><span class="hll">  ℚ ∈ 2^𝔸𝔼   -- Set of quorums
+</span>
+  Msgs1a ≡ {type: {"1a"}, bal: 𝔹}
+
+  Msgs1b  ≡ {type: {"1b"}, bal: 𝔹, acc: 𝔸,
+             vote: {bal: 𝔹, val: 𝕍} ∪ {null}}
+
+  Msgs2a  ≡ {type: {"2a"}, bal: 𝔹, val: 𝕍}
+<span class="hll">  Msgs2ac ≡ {type: {"2ac"}, bal: 𝔹, val: 𝕍, acc: 𝔸}
+</span>
+  Msgs2b  ≡ {type: {"2b"}, bal: 𝔹, val: 𝕍, acc: 𝔸}
+
+Assume:
+<span class="hll">  𝔼 ∩ 𝔸 = {}
+</span><span class="hll">  ∀ q1, q2 ∈ ℚ: q1 ∩ q2 ∩ 𝔸 ≠ {}
+</span>
+Vars:
+  -- Set of all messages sent so far
+  msgs ∈ 2^(Msgs1a ∪ Msgs1b ∪ Msgs2a ∪ Msgs2ac ∪ Msgs2b)
+
+  -- Function that maps acceptors to ballot numbers or -1
+  -- maxBal :: 𝔸 -&gt; 𝔹 ∪ {-1}
+  maxBal ∈ (𝔹 ∪ {-1})^𝔸
+
+  -- Function that maps acceptors to their last vote
+  -- lastVote :: 𝔸 -&gt; {bal: 𝔹, val: 𝕍} ∪ {null}
+  lastVote ∈ ({bal: 𝔹, val: 𝕍} ∪ {null})^𝔸
+
+<span class="hll">  -- Function which maps acceptors to values they confirmed as safe
+</span><span class="hll">  -- confirm :: (𝔸, 𝔹) -&gt; 𝕍 ∪ {null}
+</span><span class="hll">  confirm ∈ (𝕍 ∪ {null})^(𝔸 × 𝔹)
+</span><span class="hll">
+</span>Send(m) ≡ msgs' = msgs ∪ {m}
+
+Confirmed(b, v) ≡
+<span class="hll">  ∃ q ∈ ℚ: ∀ a ∈ q: {type: "2ac", bal: b, val: v, acc: a} ∈ msgs
+</span><span class="hll">
+</span>Safe(b, v) ≡
+  ∃ q ∈ ℚ:
+  let
+    qmsgs  ≡ {m ∈ msgs: m.type = "1b" ∧ m.bal = b ∧ m.acc ∈ q}
+    qvotes ≡ {m ∈ qmsgs: m.vote ≠ null}
+  in
+      ∀ a ∈ q: ∃ m ∈ qmsgs: m.acc = a
+    ∧ (  qvotes = {}
+       ∨ ∃ m ∈ qvotes:
+             m.vote.val = v
+           ∧ ∀ m1 ∈ qvotes: m1.vote.bal &lt;= m.vote.bal)
+
+Byzantine(a) ≡
+<span class="hll">      ∃ b ∈ 𝔹:             Send({type: "1a", bal: b})
+</span><span class="hll">    ∨ ∃ b1, b2 ∈ 𝔹, v ∈ 𝕍: Send({type: "1b", bal: b1, acc: a,
+</span><span class="hll">                                 vote: {bal: b2, val: v}})
+</span><span class="hll">    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2a", bal: b, val: v})
+</span><span class="hll">    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2ac", bal: b, val: v, acc: a})
+</span><span class="hll">    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2b", bal: b, val: v, acc: a})
+</span><span class="hll">  ∧ maxBal' = maxBal
+</span><span class="hll">  ∧ lastVote' = lastVote
+</span><span class="hll">  ∧ confirm' = confirm
+</span>
+Phase1b(a) ≡
+  ∃ m ∈ msgs:
+      m.type = "1a" ∧ maxBal(a) &lt; m.bal
+    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1
+                            then m.bal - 1
+                            else maxBal(a1)
+    ∧ lastVote' = lastVote
+    ∧ confirm' = confirm
+    ∧ Send({type: "1b", bal: m.bal, acc: a, vote: lastVote(a)})
+<span class="hll">
+</span><span class="hll">Phase2ac(a) ≡
+</span><span class="hll">  ∃ m ∈ msgs:
+</span><span class="hll">      m.type = "2a"
+</span><span class="hll">    ∧ confirm(a, m.bal) = null
+</span><span class="hll">    ∧ Safe(m.bal, m.val)
+</span><span class="hll">    ∧ maxBal' = maxBal
+</span><span class="hll">    ∧ lastVote' = lastVote
+</span><span class="hll">    ∧ confirm' = λ a1 ∈ 𝔸, b1 \in 𝔹:
+</span><span class="hll">                 if a = a1 ∧ b1 = m.bal then m.val else confirm(a1, b1)
+</span><span class="hll">    ∧ Send({type: "2ac", bal: m.bal, val: m.val, acc: a})
+</span>
+Phase2b(a) ≡
+  ∃ b ∈ 𝔹, v ∈ 𝕍:
+<span class="hll">      Confirmed(b, v)
+</span>    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1 then m.bal else maxBal(a1)
+    ∧ lastVote' = λ a1 ∈ 𝔸: if a = a1
+                              then {bal: m.bal, val: m.val}
+                              else lastVote(a1)
+    ∧ confirm' = confirm
+    ∧ Send({type: "2b", bal: m.bal, val: m.val, acc: a})
+
+Init ≡
+    msgs = {}
+  ∧ maxBal   = λ a ∈ 𝔸: -1
+  ∧ lastVote = λ a ∈ 𝔸: null
+  ∧ confirm = λ a ∈ 𝔸, b ∈ 𝔹: null
+
+Next ≡
+    ∃ a ∈ 𝔸:
+        Phase1b(a) ∨ Phase2ac(a) ∨ Phase2b(a)
+  ∨ ∃ a ∈ 𝔼:
+        Byzantine(a)
+
+chosen ≡
+  {v ∈ V: ∃ q ∈ ℚ, b ∈ 𝔹: AllVotedFor(q, b, v)}
+
+AllVotedFor(q, b, v) ≡
+  ∀ a ∈ q: (a, b, v) ∈ votes
+
+votes ≡
+  let
+    msgs2b ≡ {m ∈ msgs: m.type = "2b"}
+  in
+    {(m.acc, m.bal, m.val): m ∈ msgs2b}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>In the above, I&#8217;ve also removed phases <code>1a</code> and <code>2a</code>, as byzantine acceptors are allowed to send arbitrary messages as well (we&#8217;ll need explicit <code>1a</code>/<code>2a</code> for liveness, but we won&#8217;t discuss that here).</p>
+</div>
+<div class="paragraph">
+<p>The most important conceptual addition is <code>Phase2ac</code>&#8201;&#8212;&#8201;if an acceptor receives a new <code>2a</code> message for some ballot with a safe value, it sends out the confirmation provided that it hadn&#8217;t done that already.
+In <code>Phase2b</code> then we can vote for confirmed values: confirmation by a quorum guarantees both that the value is safe at this ballot, and that this is a single value that can be voted for in this ballot (two different values can&#8217;d be confirmed in the same ballot, because quorums have an honest acceptor in common).
+This <em>almost</em> works, but there&#8217;s still a problem.
+Can you spot it?</p>
+</div>
+<div class="paragraph">
+<p>The problem is in the <code>Safe</code> condition.
+Recall that the goal of the <code>Safe</code> condition is to pick a value <code>v</code> for ballot <code>b</code>, such that, if any earlier ballot <code>b1</code> concludes, the value chosen in <code>b1</code> would necessary be <code>v</code>.
+The way <code>Safe</code> works for ballot <code>b</code> in normal Paxos is that the coordinator asks a certain quorum to abstain from further voting in ballots earlier than <code>b</code>, collects existing votes, and uses those votes to pick a safe value.
+Specifically, it looks at the vote for the highest-numbered ballot in the set, and declares a value from it as safe (it <em>is</em> safe: it was safe at <em>that</em> ballot, and for all future ballots there&#8217;s a quorum which abstained from voting).</p>
+</div>
+<div class="paragraph">
+<p>This procedure puts a lot of trust in that highest vote, which makes it vulnerable.
+An evil acceptor can just say that it voted in some high ballot, and force a choice of arbitrary value.
+So, we need some independent confirmation that the vote was cast for a safe value.
+And we can re-use <code>2ac</code> messages for this:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+</pre></td><td class="code"><pre>Safe(b, v) ≡
+  ∃ q ∈ Q:
+  let
+    qmsgs  ≡ {m ∈ msgs: m.type = "1b" ∧ m.bal = b ∧ m.acc ∈ q}
+    qvotes ≡ {m ∈ qmsgs: m.vote ≠ null}
+  in
+      ∀ a ∈ q: ∃ m ∈ qmsgs: m.acc = a
+   ∧ (  qvotes = {}
+       ∨ ∃ m ∈ qvotes:
+             m.vote.val = v
+           ∧ ∀ m1 ∈ qvotes: m1.vote.bal &lt;= m.vote.bal
+<span class="hll">           ∧ Confirmed(m.vote.bal, v))
+</span></pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>And &#8230;&#8203; that&#8217;s it, really.
+Now we can sketch a proof that this thing indeed achieves BFT consensus, because it actually models normal Paxos among non-byzantine acceptors.</p>
+</div>
+<div class="paragraph">
+<p>Phase1a messages of Paxos are modeled by Phase1a messages of BFT Paxos, as they don&#8217;t have any preconditions, the same goes for Phase1b.
+Phase2a message of Paxos is emitted when a value becomes confirmed in BFT Paxos.
+This is correct modeling, because BFT&#8217;s Safe condition models normal Paxos Safe condition (this &#8230;&#8203; is a bit inexact I think, to make this exact, we want to separate &#8220;this value is safe&#8221; from &#8220;we are voting for this value&#8221; in original Paxos as well).
+Finally, Phase2b also displays direct correspondence.</p>
+</div>
+<div class="paragraph">
+<p>As a final pop-quiz, I claim that the <code>Confirmed(m.vote.bal, v)</code> condition in <code>Safe</code> above can be relaxed.
+As stated, <code>Confirmed</code> needs a byzantine quorum of confirmations, which guarantees both that the value is safe and that it is the single confirmed value, which is a bit more than we need here.
+Do you see what would be enough?</p>
+</div>
+<div class="paragraph">
+<p>The final specification contains this relaxation:</p>
+</div>
+<div class="listingblock">
+<div class="title">BFT Paxos</div>
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10
+ 11
+ 12
+ 13
+ 14
+ 15
+ 16
+ 17
+ 18
+ 19
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 30
+ 31
+ 32
+ 33
+ 34
+ 35
+ 36
+ 37
+ 38
+ 39
+ 40
+ 41
+ 42
+ 43
+ 44
+ 45
+ 46
+ 47
+ 48
+ 49
+ 50
+ 51
+ 52
+ 53
+ 54
+ 55
+ 56
+ 57
+ 58
+ 59
+ 60
+ 61
+ 62
+ 63
+ 64
+ 65
+ 66
+ 67
+ 68
+ 69
+ 70
+ 71
+ 72
+ 73
+ 74
+ 75
+ 76
+ 77
+ 78
+ 79
+ 80
+ 81
+ 82
+ 83
+ 84
+ 85
+ 86
+ 87
+ 88
+ 89
+ 90
+ 91
+ 92
+ 93
+ 94
+ 95
+ 96
+ 97
+ 98
+ 99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+</pre></td><td class="code"><pre>Sets:
+  𝔹          -- Numbered set of ballots (for example, ℕ)
+  𝕍          -- Arbitrary set of values
+  𝔸          -- Finite set of acceptors
+  𝔼          -- Finite set of evil acceptors
+  𝔸𝔼 ≡ 𝔸 ∪ 𝔼 -- Set of all acceptors
+  ℚ ∈ 2^𝔸𝔼   -- Set of quorums
+  𝕎ℚ ∈ 2^𝔸𝔼  -- Set of weak quorums
+
+  Msgs1a ≡ {type: {"1a"}, bal: 𝔹}
+
+  Msgs1b  ≡ {type: {"1b"}, bal: 𝔹, acc: 𝔸𝔼,
+             vote: {bal: 𝔹, val: 𝕍} ∪ {null}}
+
+  Msgs2a  ≡ {type: {"2a"}, bal: 𝔹, val: 𝕍}
+  Msgs2ac ≡ {type: {"2ac"}, bal: 𝔹, val: 𝕍, acc: 𝔸𝔸𝔼}
+
+  Msgs2b  ≡ {type: {"2b"}, bal: 𝔹, val: 𝕍, acc: 𝔸𝔸𝔼}
+
+Assume:
+  𝔼 ∩ 𝔸 = {}
+  ∀ q1, q2 ∈ ℚ: q1 ∩ q2 ∩ 𝔸 ≠ {}
+  ∀ q ∈ 𝕎ℚ: q ∩ 𝔸 ≠ {}
+
+Vars:
+  -- Set of all messages sent so far
+  msgs ∈ 2^(Msgs1a ∪ Msgs1b ∪ Msgs2a ∪ Msgs2ac ∪ Msgs2b)
+
+  -- Function that maps acceptors to ballot numbers or -1
+  -- maxBal :: 𝔸 -&gt; 𝔹 ∪ {-1}
+  maxBal ∈ (𝔹 ∪ {-1})^𝔸
+
+  -- Function that maps acceptors to their last vote
+  -- lastVote :: 𝔸 -&gt; {bal: 𝔹, val: 𝕍} ∪ {null}
+  lastVote ∈ ({bal: 𝔹, val: 𝕍} ∪ {null})^𝔸
+
+  -- Function which maps acceptors to values they confirmed as safe
+  -- confirm :: (𝔸, 𝔹) -&gt; 𝕍 ∪ {null}
+  confirm ∈ (𝕍 ∪ {null})^(𝔸 × 𝔹)
+
+Send(m) ≡ msgs' = msgs ∪ {m}
+
+Safe(b, v) ≡
+  ∃ q ∈ ℚ:
+  let
+    qmsgs  ≡ {m ∈ msgs: m.type = "1b" ∧ m.bal = b ∧ m.acc ∈ q}
+    qvotes ≡ {m ∈ qmsgs: m.vote ≠ null}
+  in
+      ∀ a ∈ q: ∃ m ∈ qmsgs: m.acc = a
+    ∧ (  qvotes = {}
+       ∨ ∃ m ∈ qvotes:
+             m.vote.val = v
+           ∧ ∀ m1 ∈ qvotes: m1.vote.bal &lt;= m.vote.bal
+           ∧ confirmedWeak(m.vote.val, v))
+
+Confirmed(b, v) ≡
+  ∃ q ∈ ℚ: ∀ a ∈ q: {type: "2ac", bal: b, val: v, acc: a} ∈ msgs
+
+ConfirmedWeak(b, v) ≡
+  ∃ q ∈ 𝕎ℚ: ∀ a ∈ q: {type: "2ac", bal: b, val: v, acc: a} ∈ msgs
+
+Byzantine(a) ≡
+      ∃ b ∈ 𝔹:             Send({type: "1a", bal: b})
+    ∨ ∃ b1, b2 ∈ 𝔹, v ∈ 𝕍: Send({type: "1b", bal: b1, acc: a,
+                                 vote: {bal: b2, val: v}})
+    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2a", bal: b, val: v})
+    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2ac", bal: b, val: v, acc: a})
+    ∨ ∃ b ∈ 𝔹, v ∈ 𝕍:      Send({type: "2b", bal: b, val: v, acc: a})
+  ∧ maxBal' = maxBal
+  ∧ lastVote' = lastVote
+  ∧ confirm' = confirm
+
+Phase1b(a) ≡
+  ∃ m ∈ msgs:
+      m.type = "1a" ∧ maxBal(a) &lt; m.bal
+    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1
+                            then m.bal - 1
+                            else maxBal(a1)
+    ∧ lastVote' = lastVote
+    ∧ confirm' = confirm
+    ∧ Send({type: "1b", bal: m.bal, acc: a, vote: lastVote(a)})
+
+Phase2ac(a) ≡
+  ∃ m ∈ msgs:
+      m.type = "2a"
+    ∧ confirm(a, m.bal) = null
+    ∧ Safe(m.bal, m.val)
+    ∧ maxBal' = maxBal
+    ∧ lastVote' = lastVote
+    ∧ confirm' = λ a1 ∈ 𝔸, b1 \in 𝔹:
+                 if a = a1 ∧ b1 = m.bal then m.val else confirm(a1, b1)
+    ∧ Send({type: "2ac", bal: m.bal, val: m.val, acc: a})
+
+Phase2b(a) ≡
+  ∃ b ∈ 𝔹, v ∈ 𝕍:
+      confirmed(b, v)
+    ∧ maxBal' = λ a1 ∈ 𝔸: if a = a1 then m.bal else maxBal(a1)
+    ∧ lastVote' = λ a1 ∈ 𝔸: if a = a1
+                              then {bal: m.bal, val: m.val}
+                              else lastVote(a1)
+    ∧ confirm' = confirm
+    ∧ Send({type: "2b", bal: m.bal, val: m.val, acc: a})
+
+Init ≡
+    msgs = {}
+  ∧ maxBal   = λ a ∈ 𝔸: -1
+  ∧ lastVote = λ a ∈ 𝔸: null
+  ∧ confirm = λ a ∈ 𝔸, b ∈ 𝔹: null
+
+Next ≡
+    ∃ b ∈ 𝔹:
+        Phase1a(b) ∨ ∃ v ∈ 𝕍: Phase2a(b, v)
+  ∨ ∃ a ∈ 𝔸:
+        Phase1b(a) ∨ Phase2ac(a) ∨ Phase2b(a)
+  ∨ ∃ a ∈ 𝔼:
+        Byzantine(a)
+
+chosen ≡
+  {v ∈ V: ∃ q ∈ ℚ, b ∈ 𝔹: AllVotedFor(q, b, v)}
+
+AllVotedFor(q, b, v) ≡
+  ∀ a ∈ q: (a, b, v) ∈ votes
+
+votes ≡
+  let
+    msgs2b ≡ {m ∈ msgs: m.type = "2b"}
+  in
+    {(m.acc, m.bal, m.val): m ∈ msgs2b}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>TLA+ specs for this post are available here: <a href="https://github.com/matklad/paxosnotes" class="bare">https://github.com/matklad/paxosnotes</a>.</p>
+</div>
+</div>
+</div>
+</article>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <a href="https://github.com/matklad/matklad.github.io/edit/master/_posts/2022-10-03-from-paxos-to-bft.adoc">
+        <i class="fa fa-edit"></i> fix typo
+      </a>
+
+      <a href=" /feed.xml">
+        <i class="fa fa-rss"></i> rss
+      </a>
+
+      <a href="https://github.com/matklad">
+        <i class="fa fa-github"></i> matklad
+      </a>
+    </p>
+  </footer>
+</body>
+
+</html>
